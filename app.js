@@ -1,24 +1,26 @@
 const { createClient } = supabase;
 const db = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
-const STORAGE_KEY = "dddt_competences_reponse_v1";
 const appEl = document.getElementById("app");
 const progressEl = document.getElementById("progress");
 const progressFill = document.getElementById("progress-fill");
 const progressLabel = document.getElementById("progress-label");
 
-const STEPS = ["intro", "emplois", "competences", "horsmetier", "autres", "recap", "done"];
+const STEPS = ["intro", "identite", "emplois", "competences", "horsmetier", "autres", "recap", "done"];
 const STEP_LABELS = {
-  emplois: "1 · Votre métier",
-  competences: "2 · Vos compétences métier",
-  horsmetier: "3 · Autre expertise",
-  autres: "4 · Compétences complémentaires",
-  recap: "5 · Vérification",
+  identite: "1 · Votre identité",
+  emplois: "2 · Votre métier",
+  competences: "3 · Vos compétences métier",
+  horsmetier: "4 · Autre expertise",
+  autres: "5 · Compétences complémentaires",
+  recap: "6 · Vérification",
 };
 
 let state = {
   step: "intro",
   loaded: false,
+  nom: "",
+  prenom: "",
   emplois: [],
   competences: [],
   competencesById: new Map(),
@@ -33,10 +35,6 @@ let state = {
   submitting: false,
   error: null,
 };
-
-function alreadySubmitted() {
-  return !!localStorage.getItem(STORAGE_KEY);
-}
 
 async function loadData() {
   const [emploisRes, competencesRes, ecRes, autresRes, niveauxRes] = await Promise.all([
@@ -144,6 +142,7 @@ function render() {
 
   switch (state.step) {
     case "intro": return renderIntro();
+    case "identite": return renderIdentite();
     case "emplois": return renderEmplois();
     case "competences": return renderCompetences();
     case "horsmetier": return renderHorsMetier();
@@ -154,29 +153,20 @@ function render() {
 }
 
 function renderIntro() {
-  if (alreadySubmitted()) {
-    appEl.innerHTML = `
-      <div class="end-screen">
-        <div class="icon">✓</div>
-        <h1>Vous avez déjà répondu</h1>
-        <p>Une réponse a déjà été enregistrée depuis ce navigateur. Merci pour votre contribution à la cartographie des compétences de la DDDT.</p>
-      </div>`;
-    return;
-  }
-
   appEl.innerHTML = `
     <div class="step">
       <h1>Cartographie des compétences de la DDDT</h1>
       <p class="lead">
         Ce court questionnaire recense les compétences de chaque agent de la direction — celles liées à votre métier,
         mais aussi toute expertise que vous possédez au-delà (langues, permis, savoir-faire pratiques…).
-        Vos réponses sont anonymes : aucun nom, matricule ou identifiant n'est demandé.
+        Vos réponses sont associées à votre nom, afin de pouvoir identifier qui détient quelle compétence
+        en cas de besoin ponctuel.
       </p>
       <div class="card">
         <strong>Comment ça se passe</strong>
         <p style="color:var(--muted); margin: 8px 0 0;">
-          Vous indiquez votre métier, vous notez les compétences qui y sont liées, puis vous pouvez ajouter
-          librement toute autre compétence que vous possédez. Comptez 5 à 10 minutes.
+          Vous indiquez votre identité et votre métier, vous notez les compétences qui y sont liées, puis vous pouvez
+          ajouter librement toute autre compétence que vous possédez. Comptez 5 à 10 minutes.
         </p>
       </div>
       <div class="nav-row" style="justify-content:flex-start;">
@@ -193,8 +183,40 @@ function renderIntro() {
         return;
       }
     }
-    setStep("emplois");
+    setStep("identite");
   });
+}
+
+function renderIdentite() {
+  const canContinue = state.nom.trim().length > 0 && state.prenom.trim().length > 0;
+  appEl.innerHTML = `
+    <div class="step">
+      <h1>Qui êtes-vous ?</h1>
+      <p class="lead">Vos nom et prénom permettront de savoir qui détient quelle compétence.</p>
+      <div class="card">
+        <label style="display:block; font-weight:500; margin-bottom:6px;">Nom</label>
+        <input type="text" class="search-box" id="id-nom" placeholder="Votre nom" value="${escapeHtml(state.nom)}">
+        <label style="display:block; font-weight:500; margin-bottom:6px;">Prénom</label>
+        <input type="text" class="search-box" id="id-prenom" placeholder="Votre prénom" value="${escapeHtml(state.prenom)}" style="margin-bottom:0;">
+      </div>
+      <div class="nav-row">
+        <button class="btn btn-secondary" id="back-btn">Retour</button>
+        <button class="btn btn-primary" id="next-btn" ${canContinue ? "" : "disabled"}>Continuer</button>
+      </div>
+    </div>`;
+
+  const nomInput = document.getElementById("id-nom");
+  const prenomInput = document.getElementById("id-prenom");
+  const nextBtn = document.getElementById("next-btn");
+
+  function syncBtn() {
+    nextBtn.disabled = !(state.nom.trim().length > 0 && state.prenom.trim().length > 0);
+  }
+  nomInput.addEventListener("input", () => { state.nom = nomInput.value; syncBtn(); });
+  prenomInput.addEventListener("input", () => { state.prenom = prenomInput.value; syncBtn(); });
+
+  document.getElementById("back-btn").addEventListener("click", () => setStep("intro"));
+  nextBtn.addEventListener("click", () => setStep("emplois"));
 }
 
 function renderEmplois() {
@@ -249,7 +271,7 @@ function renderEmplois() {
     btn.addEventListener("click", () => toggleEmploi(parseInt(btn.dataset.remove)));
   });
 
-  document.getElementById("back-btn").addEventListener("click", () => setStep("intro"));
+  document.getElementById("back-btn").addEventListener("click", () => setStep("identite"));
   document.getElementById("next-btn").addEventListener("click", () => setStep("competences"));
 }
 
@@ -464,9 +486,14 @@ function renderRecap() {
   appEl.innerHTML = `
     <div class="step">
       <h1>Vérifiez avant d'envoyer</h1>
-      <p class="lead">Voici un résumé de ce qui sera enregistré. Votre réponse reste anonyme.</p>
+      <p class="lead">Voici un résumé de ce qui sera enregistré sous votre nom.</p>
 
       ${state.error ? `<div class="error-banner">${escapeHtml(state.error)}</div>` : ""}
+
+      <div class="recap-section">
+        <h3>Identité</h3>
+        <div class="card">${escapeHtml(state.prenom)} ${escapeHtml(state.nom)}</div>
+      </div>
 
       <div class="recap-section">
         <h3>Métier(s)</h3>
@@ -513,7 +540,6 @@ function renderRecap() {
 }
 
 async function submitReponse() {
-  if (alreadySubmitted()) { setStep("intro"); return; }
   state.submitting = true;
   state.error = null;
   render();
@@ -521,10 +547,15 @@ async function submitReponse() {
   try {
     const { data: reponse, error: repError } = await db
       .from("reponses")
-      .insert({})
+      .insert({ nom: state.nom.trim(), prenom: state.prenom.trim() })
       .select()
       .single();
-    if (repError) throw repError;
+    if (repError) {
+      if (repError.code === "23505") {
+        throw new Error(`Une réponse a déjà été enregistrée pour ${state.prenom.trim()} ${state.nom.trim()}. Si vous pensez qu'il s'agit d'une erreur, contactez le pilote du projet.`);
+      }
+      throw repError;
+    }
     const reponseId = reponse.id;
 
     const emploisRows = [...state.selectedEmplois].map(emploi_type_id => ({ reponse_id: reponseId, emploi_type_id }));
@@ -557,13 +588,14 @@ async function submitReponse() {
       if (error) throw error;
     }
 
-    localStorage.setItem(STORAGE_KEY, new Date().toISOString());
     state.submitting = false;
     setStep("done");
   } catch (e) {
     console.error(e);
     state.submitting = false;
-    state.error = "L'envoi a échoué. Vérifiez votre connexion et réessayez.";
+    state.error = e.message && e.message.startsWith("Une réponse a déjà été enregistrée")
+      ? e.message
+      : "L'envoi a échoué. Vérifiez votre connexion et réessayez.";
     render();
   }
 }
@@ -573,7 +605,7 @@ function renderDone() {
     <div class="end-screen">
       <div class="icon">✓</div>
       <h1>Merci pour votre réponse</h1>
-      <p>Votre contribution est enregistrée anonymement et alimentera la cartographie des compétences de la DDDT.</p>
+      <p>Votre contribution est enregistrée et alimentera la cartographie des compétences de la DDDT.</p>
     </div>`;
 }
 
