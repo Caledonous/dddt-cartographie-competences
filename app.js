@@ -649,3 +649,33 @@ async function submitReponse() {
       reponse_id: reponseId,
       autre_competence_id,
       possede: true,
+      precision: v.precision || null,
+    }));
+    if (autresRows.length) {
+      const { error } = await db.from("reponses_autres_competences").insert(autresRows);
+      if (error) throw error;
+    }
+
+    state.submitting = false;
+    setStep("done");
+  } catch (e) {
+    console.error(e);
+    state.submitting = false;
+    state.error = e.message && e.message.startsWith("Une réponse a déjà été enregistrée")
+      ? e.message
+      : "L'envoi a échoué. Vérifiez votre connexion et réessayez.";
+    render();
+  }
+}
+
+function renderDone() {
+  appEl.innerHTML = `
+    <div class="end-screen">
+      <div class="icon">✓</div>
+      <h1>Merci pour votre réponse</h1>
+      <p>Votre contribution est enregistrée et alimentera la cartographie des compétences de la DDDT.</p>
+    </div>`;
+}
+
+/* ---------------- INIT ---------------- */
+render();
