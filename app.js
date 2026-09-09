@@ -6,14 +6,14 @@ const progressEl = document.getElementById("progress");
 const progressFill = document.getElementById("progress-fill");
 const progressLabel = document.getElementById("progress-label");
 
-const STEPS = ["intro", "identite", "emplois", "competences", "supplementaires", "horsmetier", "autres", "recap", "done"];
+const STEPS = ["intro", "identite", "emplois", "competences", "supplementaires", "autres", "horsmetier", "recap", "done"];
 const STEP_LABELS = {
   identite: "1 · Votre identité",
   emplois: "2 · Votre métier",
   competences: "3 · Vos compétences métier",
   supplementaires: "4 · Autres compétences de votre bureau",
-  horsmetier: "5 · Autre expertise",
-  autres: "6 · Compétences complémentaires",
+  autres: "5 · Compétences complémentaires",
+  horsmetier: "6 · Autre expertise",
   recap: "7 · Vérification",
 };
 
@@ -229,7 +229,25 @@ function renderIdentite() {
   prenomInput.addEventListener("input", () => { state.prenom = prenomInput.value; syncBtn(); });
 
   document.getElementById("back-btn").addEventListener("click", () => setStep("intro"));
-  nextBtn.addEventListener("click", () => setStep("emplois"));
+  nextBtn.addEventListener("click", async () => {
+    if (!state._suggestionDone) {
+      nextBtn.disabled = true;
+      nextBtn.textContent = "Un instant…";
+      try {
+        const { data, error } = await db.rpc("suggest_emplois", { p_nom: state.nom.trim(), p_prenom: state.prenom.trim() });
+        if (!error && data && data.length && state.selectedEmplois.size === 0) {
+          data.forEach(row => state.selectedEmplois.add(row.emploi_type_id));
+          state._suggested = true;
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      state._suggestionDone = true;
+      nextBtn.disabled = false;
+      nextBtn.textContent = "Continuer";
+    }
+    setStep("emplois");
+  });
 }
 
 function renderEmplois() {
@@ -242,6 +260,7 @@ function renderEmplois() {
     <div class="step">
       <h1>Quel est votre métier ?</h1>
       <p class="lead">Sélectionnez le ou les emplois-types qui correspondent à votre poste. La plupart des agents n'en ont qu'un.</p>
+      ${state._suggested ? `<div class="card" style="margin-bottom:16px;"><strong>Pré-rempli automatiquement</strong><p style="color:var(--muted); margin:8px 0 0;">D'après votre nom, voici le métier que nous pensons être le vôtre. Corrigez si besoin.</p></div>` : ""}
       <input type="text" class="search-box" id="emploi-search" placeholder="Rechercher un métier…" value="${escapeHtml(search)}">
       <div class="option-list" id="emploi-list">
         ${filtered.map(e => `
@@ -375,7 +394,7 @@ function renderSupplementaires() {
   });
 
   document.getElementById("back-btn").addEventListener("click", () => setStep("competences"));
-  document.getElementById("next-btn").addEventListener("click", () => setStep("horsmetier"));
+  document.getElementById("next-btn").addEventListener("click", () => setStep("autres"));
 }
 
 function renderHorsMetier() {
@@ -467,8 +486,8 @@ function renderHorsMetier() {
     if (!e.target.closest(".autocomplete-wrap")) resultsEl.hidden = true;
   });
 
-  document.getElementById("back-btn").addEventListener("click", () => setStep("supplementaires"));
-  document.getElementById("next-btn").addEventListener("click", () => setStep("autres"));
+  document.getElementById("back-btn").addEventListener("click", () => setStep("autres"));
+  document.getElementById("next-btn").addEventListener("click", () => setStep("recap"));
 }
 
 function renderAutres() {
@@ -523,8 +542,8 @@ function renderAutres() {
     });
   });
 
-  document.getElementById("back-btn").addEventListener("click", () => setStep("horsmetier"));
-  document.getElementById("next-btn").addEventListener("click", () => setStep("recap"));
+  document.getElementById("back-btn").addEventListener("click", () => setStep("supplementaires"));
+  document.getElementById("next-btn").addEventListener("click", () => setStep("horsmetier"));
 }
 
 function niveauLibelle(n) {
@@ -600,7 +619,7 @@ function renderRecap() {
       </div>
     </div>`;
 
-  document.getElementById("back-btn").addEventListener("click", () => setStep("autres"));
+  document.getElementById("back-btn").addEventListener("click", () => setStep("horsmetier"));
   document.getElementById("submit-btn").addEventListener("click", submitReponse);
 }
 
