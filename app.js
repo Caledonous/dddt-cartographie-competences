@@ -25,13 +25,13 @@ let state = {
   emplois: [],
   competences: [],
   competencesById: new Map(),
-  emploiCompetenceMap: new Map(), // emploi_id -> Set(competence_id)
+  emploiCompetenceMap: new Map(), // emploi_id -> Map(competence_id -> origine du LIEN)
   autres: [],
   autresByCategorie: new Map(),
   niveaux: [],
   selectedEmplois: new Set(),
   ratings: new Map(),      // competence_id -> niveau (métier confirmé)
-  ratingsSupp: new Map(),  // competence_id -> niveau (compétences supplémentaires du bureau)
+  ratingsSupp: new Map(),  // competence_id -> niveau (compétences complémentaires du bureau)
   horsMetier: new Map(),   // competence_id -> niveau (hors métier)
   autresChecked: new Map(),// autre_competence_id -> {precision}
   submitting: false,
@@ -41,8 +41,8 @@ let state = {
 async function loadData() {
   const [emploisRes, competencesRes, ecRes, autresRes, niveauxRes] = await Promise.all([
     db.from("emplois_types").select("id, libelle, nb_agents_reference").order("libelle"),
-    db.from("competences").select("id, libelle, famille, domaine, origine"),
-    db.from("emplois_competences").select("emploi_type_id, competence_id"),
+    db.from("competences").select("id, libelle, famille, domaine"),
+    db.from("emplois_competences").select("emploi_type_id, competence_id, origine"),
     db.from("autres_competences").select("id, categorie, libelle").order("categorie"),
     db.from("niveaux_competence").select("niveau, libelle, description").order("niveau"),
   ]);
@@ -58,9 +58,9 @@ async function loadData() {
   state.emploiCompetenceMap = new Map();
   for (const row of ecRes.data) {
     if (!state.emploiCompetenceMap.has(row.emploi_type_id)) {
-      state.emploiCompetenceMap.set(row.emploi_type_id, new Set());
+      state.emploiCompetenceMap.set(row.emploi_type_id, new Map());
     }
-    state.emploiCompetenceMap.get(row.emploi_type_id).add(row.competence_id);
+    state.emploiCompetenceMap.get(row.emploi_type_id).set(row.competence_id, row.origine);
   }
 
   state.autres = autresRes.data;
@@ -95,10 +95,9 @@ function updateProgress() {
 function getMetierCompetenceIds(origine) {
   const ids = new Set();
   for (const emploiId of state.selectedEmplois) {
-    const set = state.emploiCompetenceMap.get(emploiId);
-    if (set) for (const id of set) {
-      const c = state.competencesById.get(id);
-      if (!origine || (c && c.origine === origine)) ids.add(id);
+    const map = state.emploiCompetenceMap.get(emploiId);
+    if (map) for (const [id, o] of map.entries()) {
+      if (!origine || o === origine) ids.add(id);
     }
   }
   return ids;
@@ -106,8 +105,7 @@ function getMetierCompetenceIds(origine) {
 
 function getAllShownCompetenceIds() {
   const ids = new Set();
-  for (const id of getMetierCompetenceIds("EAE confirmée")) ids.add(id);
-  for (const id of getMetierCompetenceIds("Proposée")) ids.add(id);
+  for (const id of getMetierCompetenceIds()) ids.add(id);
   return ids;
 }
 
@@ -364,8 +362,8 @@ function renderSupplementaires() {
     <div class="step">
       <h1>Autres compétences de votre bureau</h1>
       <p class="lead">
-        Voici d'autres compétences qui peuvent concerner votre bureau. Indiquez votre niveau si elles vous
-        concernent, ou laissez "Sans avis" sinon.
+        Ces compétences concernent votre bureau ou votre service mais ne font pas partie de votre poste au
+        quotidien. Indiquez votre niveau si vous les maîtrisez tout de même, ou laissez "Sans avis" sinon.
       </p>
       ${groups.map(([domaine, comps]) => `
         <div class="domain-group">
@@ -377,7 +375,7 @@ function renderSupplementaires() {
             </div>
           `).join("")}
         </div>
-      `).join("") || `<p class="lead">Aucune compétence supplémentaire identifiée pour ce métier.</p>`}
+      `).join("") || `<p class="lead">Aucune compétence complémentaire identifiée pour ce métier.</p>`}
       <div class="nav-row">
         <button class="btn btn-secondary" id="back-btn">Retour</button>
         <button class="btn btn-primary" id="next-btn">Continuer</button>
