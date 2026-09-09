@@ -6,14 +6,15 @@ const progressEl = document.getElementById("progress");
 const progressFill = document.getElementById("progress-fill");
 const progressLabel = document.getElementById("progress-label");
 
-const STEPS = ["intro", "identite", "emplois", "competences", "horsmetier", "autres", "recap", "done"];
+const STEPS = ["intro", "identite", "emplois", "competences", "supplementaires", "horsmetier", "autres", "recap", "done"];
 const STEP_LABELS = {
   identite: "1 · Votre identité",
   emplois: "2 · Votre métier",
   competences: "3 · Vos compétences métier",
-  horsmetier: "4 · Autre expertise",
-  autres: "5 · Compétences complémentaires",
-  recap: "6 · Vérification",
+  supplementaires: "4 · Autres compétences de votre bureau",
+  horsmetier: "5 · Autre expertise",
+  autres: "6 · Compétences complémentaires",
+  recap: "7 · Vérification",
 };
 
 let state = {
@@ -29,7 +30,8 @@ let state = {
   autresByCategorie: new Map(),
   niveaux: [],
   selectedEmplois: new Set(),
-  ratings: new Map(),      // competence_id -> niveau (métier)
+  ratings: new Map(),      // competence_id -> niveau (métier confirmé)
+  ratingsSupp: new Map(),  // competence_id -> niveau (compétences supplémentaires du bureau)
   horsMetier: new Map(),   // competence_id -> niveau (hors métier)
   autresChecked: new Map(),// autre_competence_id -> {precision}
   submitting: false,
@@ -39,7 +41,7 @@ let state = {
 async function loadData() {
   const [emploisRes, competencesRes, ecRes, autresRes, niveauxRes] = await Promise.all([
     db.from("emplois_types").select("id, libelle, nb_agents_reference").order("libelle"),
-    db.from("competences").select("id, libelle, famille, domaine"),
+    db.from("competences").select("id, libelle, famille, domaine, origine"),
     db.from("emplois_competences").select("emploi_type_id, competence_id"),
     db.from("autres_competences").select("id, categorie, libelle").order("categorie"),
     db.from("niveaux_competence").select("niveau, libelle, description").order("niveau"),
@@ -90,12 +92,22 @@ function updateProgress() {
   progressLabel.textContent = STEP_LABELS[state.step] || "";
 }
 
-function getMetierCompetenceIds() {
+function getMetierCompetenceIds(origine) {
   const ids = new Set();
   for (const emploiId of state.selectedEmplois) {
     const set = state.emploiCompetenceMap.get(emploiId);
-    if (set) for (const id of set) ids.add(id);
+    if (set) for (const id of set) {
+      const c = state.competencesById.get(id);
+      if (!origine || (c && c.origine === origine)) ids.add(id);
+    }
   }
+  return ids;
+}
+
+function getAllShownCompetenceIds() {
+  const ids = new Set();
+  for (const id of getMetierCompetenceIds("EAE confirmée")) ids.add(id);
+  for (const id of getMetierCompetenceIds("Proposée")) ids.add(id);
   return ids;
 }
 
@@ -145,6 +157,7 @@ function render() {
     case "identite": return renderIdentite();
     case "emplois": return renderEmplois();
     case "competences": return renderCompetences();
+    case "supplementaires": return renderSupplementaires();
     case "horsmetier": return renderHorsMetier();
     case "autres": return renderAutres();
     case "recap": return renderRecap();
@@ -282,7 +295,7 @@ function toggleEmploi(id) {
 }
 
 function renderCompetences() {
-  const ids = getMetierCompetenceIds();
+  const ids = getMetierCompetenceIds("EAE confirmée");
   const competences = [...ids].map(id => state.competencesById.get(id)).filter(Boolean);
   const groups = groupByDomaine(competences);
 
@@ -320,11 +333,53 @@ function renderCompetences() {
   });
 
   document.getElementById("back-btn").addEventListener("click", () => setStep("emplois"));
+  document.getElementById("next-btn").addEventListener("click", () => setStep("supplementaires"));
+}
+
+function renderSupplementaires() {
+  const ids = getMetierCompetenceIds("Proposée");
+  const competences = [...ids].map(id => state.competencesById.get(id)).filter(Boolean);
+  const groups = groupByDomaine(competences);
+
+  appEl.innerHTML = `
+    <div class="step">
+      <h1>Autres compétences de votre bureau</h1>
+      <p class="lead">
+        Voici d'autres compétences qui peuvent concerner votre bureau. Indiquez votre niveau si elles vous
+        concernent, ou laissez "Sans avis" sinon.
+      </p>
+      ${groups.map(([domaine, comps]) => `
+        <div class="domain-group">
+          <div class="domain-title">${escapeHtml(domaine)}</div>
+          ${comps.map(c => `
+            <div class="comp-row">
+              <div class="comp-label">${escapeHtml(c.libelle)}</div>
+              ${levelSelectorHtml(`supp-${c.id}`, state.ratingsSupp.get(c.id))}
+            </div>
+          `).join("")}
+        </div>
+      `).join("") || `<p class="lead">Aucune compétence supplémentaire identifiée pour ce métier.</p>`}
+      <div class="nav-row">
+        <button class="btn btn-secondary" id="back-btn">Retour</button>
+        <button class="btn btn-primary" id="next-btn">Continuer</button>
+      </div>
+    </div>`;
+
+  competences.forEach(c => {
+    document.getElementsByName(`supp-${c.id}`).forEach(input => {
+      input.addEventListener("change", (e) => {
+        if (e.target.value === "") state.ratingsSupp.delete(c.id);
+        else state.ratingsSupp.set(c.id, parseInt(e.target.value));
+      });
+    });
+  });
+
+  document.getElementById("back-btn").addEventListener("click", () => setStep("competences"));
   document.getElementById("next-btn").addEventListener("click", () => setStep("horsmetier"));
 }
 
 function renderHorsMetier() {
-  const metierIds = getMetierCompetenceIds();
+  const metierIds = getAllShownCompetenceIds();
 
   appEl.innerHTML = `
     <div class="step">
@@ -412,7 +467,7 @@ function renderHorsMetier() {
     if (!e.target.closest(".autocomplete-wrap")) resultsEl.hidden = true;
   });
 
-  document.getElementById("back-btn").addEventListener("click", () => setStep("competences"));
+  document.getElementById("back-btn").addEventListener("click", () => setStep("supplementaires"));
   document.getElementById("next-btn").addEventListener("click", () => setStep("autres"));
 }
 
@@ -480,6 +535,7 @@ function niveauLibelle(n) {
 function renderRecap() {
   const emploisList = [...state.selectedEmplois].map(id => state.emplois.find(e => e.id === id)?.libelle).filter(Boolean);
   const ratedMetier = [...state.ratings.entries()];
+  const ratedSupp = [...state.ratingsSupp.entries()];
   const ratedHorsMetier = [...state.horsMetier.entries()].filter(([, n]) => n !== null && n !== undefined);
   const checkedAutres = [...state.autresChecked.entries()];
 
@@ -506,6 +562,15 @@ function renderRecap() {
           ${ratedMetier.length ? ratedMetier.map(([id, n]) => `
             <div class="recap-item"><span>${escapeHtml(state.competencesById.get(id).libelle)}</span><span class="lvl">${escapeHtml(niveauLibelle(n))}</span></div>
           `).join("") : `<span style="color:var(--muted)">Aucune compétence notée</span>`}
+        </div>
+      </div>
+
+      <div class="recap-section">
+        <h3>Autres compétences de votre bureau (${ratedSupp.length})</h3>
+        <div class="card">
+          ${ratedSupp.length ? ratedSupp.map(([id, n]) => `
+            <div class="recap-item"><span>${escapeHtml(state.competencesById.get(id).libelle)}</span><span class="lvl">${escapeHtml(niveauLibelle(n))}</span></div>
+          `).join("") : `<span style="color:var(--muted)">Aucune</span>`}
         </div>
       </div>
 
@@ -568,6 +633,9 @@ async function submitReponse() {
     for (const [competence_id, niveau] of state.ratings.entries()) {
       compRows.push({ reponse_id: reponseId, competence_id, niveau, hors_metier: false });
     }
+    for (const [competence_id, niveau] of state.ratingsSupp.entries()) {
+      compRows.push({ reponse_id: reponseId, competence_id, niveau, hors_metier: false });
+    }
     for (const [competence_id, niveau] of state.horsMetier.entries()) {
       if (niveau === null || niveau === undefined) continue;
       compRows.push({ reponse_id: reponseId, competence_id, niveau, hors_metier: true });
@@ -581,33 +649,3 @@ async function submitReponse() {
       reponse_id: reponseId,
       autre_competence_id,
       possede: true,
-      precision: v.precision || null,
-    }));
-    if (autresRows.length) {
-      const { error } = await db.from("reponses_autres_competences").insert(autresRows);
-      if (error) throw error;
-    }
-
-    state.submitting = false;
-    setStep("done");
-  } catch (e) {
-    console.error(e);
-    state.submitting = false;
-    state.error = e.message && e.message.startsWith("Une réponse a déjà été enregistrée")
-      ? e.message
-      : "L'envoi a échoué. Vérifiez votre connexion et réessayez.";
-    render();
-  }
-}
-
-function renderDone() {
-  appEl.innerHTML = `
-    <div class="end-screen">
-      <div class="icon">✓</div>
-      <h1>Merci pour votre réponse</h1>
-      <p>Votre contribution est enregistrée et alimentera la cartographie des compétences de la DDDT.</p>
-    </div>`;
-}
-
-/* ---------------- INIT ---------------- */
-render();
