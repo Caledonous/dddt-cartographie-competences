@@ -402,18 +402,16 @@ async function submitReponse() {
   render();
 
   try {
-    const { data: reponse, error: repError } = await db
+    const reponseId = crypto.randomUUID();
+    const { error: repError } = await db
       .from("reponses")
-      .insert({ nom: state.nom.trim(), prenom: state.prenom.trim(), texte_libre: state.texteLibre.trim() || null })
-      .select()
-      .single();
+      .insert({ id: reponseId, nom: state.nom.trim(), prenom: state.prenom.trim(), texte_libre: state.texteLibre.trim() || null });
     if (repError) {
       if (repError.code === "23505") {
         throw new Error(`Une réponse a déjà été enregistrée pour ${state.prenom.trim()} ${state.nom.trim()}. Si vous pensez qu'il s'agit d'une erreur, contactez le pilote du projet.`);
       }
       throw repError;
     }
-    const reponseId = reponse.id;
 
     const compRows = [...state.ratings.entries()].map(([competence_id, niveau]) => ({
       reponse_id: reponseId, competence_id, niveau,
