@@ -1,0 +1,53 @@
+name: Keep Supabase Alive & Daily Snapshot
+
+on:
+  schedule:
+    # Tous les jours à 20h00 UTC (~7h00 heure Nouvelle-Calédonie le lendemain)
+    - cron: '0 20 * * *'
+  workflow_dispatch: {}  # permet de le lancer manuellement depuis l'onglet Actions
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write ping to keep_alive table
+        run: |
+          curl -s -X POST \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/keep_alive" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{}'
+          echo "Écriture envoyée."
+
+      - name: Read from competences table (simulates real app activity)
+        run: |
+          curl -s -X GET \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/competences?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json"
+          echo "Lecture envoyée."
+
+      - name: Read from keep_alive table
+        run: |
+          curl -s -X GET \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/keep_alive?select=id&order=id.desc&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json"
+          echo "Ping complet envoyé à Supabase."
+
+      - name: Create daily snapshot of all responses
+        run: |
+          curl -s -X POST \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/rpc/create_daily_snapshot" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json"
+          echo "Snapshot quotidien créé."
+
+      - name: Cleanup snapshots older than 30 days
+        run: |
+          curl -s -X POST \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/rpc/cleanup_old_snapshots" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json"
+          echo "Nettoyage des anciens snapshots effectué."
