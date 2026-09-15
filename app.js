@@ -92,7 +92,7 @@ function levelSelectorHtml(name, currentValue) {
     ${opts}
     <div class="level-option skip">
       <input type="radio" name="${name}" id="${name}-skip" value="" ${skipChecked ? "checked" : ""}>
-      <label for="${name}-skip">Sans avis</label>
+      <label for="${name}-skip">Pas concerné</label>
     </div>
   </div>`;
 }
