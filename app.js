@@ -6,15 +6,13 @@ const progressEl = document.getElementById("progress");
 const progressFill = document.getElementById("progress-fill");
 const progressLabel = document.getElementById("progress-label");
 
-const STEPS = ["intro", "identite", "emplois", "competences", "supplementaires", "autres", "horsmetier", "recap", "done"];
+const STEPS = ["intro", "identite", "competences", "supplementaires", "texte_libre", "recap", "done"];
 const STEP_LABELS = {
   identite: "1 · Votre identité",
-  emplois: "2 · Votre métier",
-  competences: "3 · Vos compétences métier",
-  supplementaires: "4 · Autres compétences de votre bureau",
-  autres: "5 · Compétences complémentaires",
-  horsmetier: "6 · Autre expertise",
-  recap: "7 · Vérification",
+  competences: "2 · Vos compétences",
+  supplementaires: "3 · Compétences complémentaires",
+  texte_libre: "4 · Autre chose à ajouter",
+  recap: "5 · Vérification",
 };
 
 let state = {
@@ -22,45 +20,35 @@ let state = {
   loaded: false,
   nom: "",
   prenom: "",
-  emplois: [],
   competences: [],
-  competencesById: new Map(),
-  emploiCompetenceMap: new Map(), // emploi_id -> Map(competence_id -> origine du LIEN)
+  competencesByDomaine: new Map(), // domaine -> [competences]
   autres: [],
   autresByCategorie: new Map(),
   niveaux: [],
-  selectedEmplois: new Set(),
-  ratings: new Map(),      // competence_id -> niveau (métier confirmé)
-  ratingsSupp: new Map(),  // competence_id -> niveau (compétences complémentaires du bureau)
-  horsMetier: new Map(),   // competence_id -> niveau (hors métier)
-  autresChecked: new Map(),// autre_competence_id -> {precision}
+  ratings: new Map(),       // competence_id -> niveau
+  autresChecked: new Map(), // autre_competence_id -> {precision}
+  texteLibre: "",
+  openDomaines: new Set(),  // thématiques dépliées
   submitting: false,
   error: null,
 };
 
 async function loadData() {
-  const [emploisRes, competencesRes, ecRes, autresRes, niveauxRes] = await Promise.all([
-    db.from("emplois_types").select("id, libelle, nb_agents_reference").order("libelle"),
-    db.from("competences").select("id, libelle, famille, domaine"),
-    db.from("emplois_competences").select("emploi_type_id, competence_id, origine"),
+  const [competencesRes, autresRes, niveauxRes] = await Promise.all([
+    db.from("competences").select("id, libelle, famille, domaine").order("libelle"),
     db.from("autres_competences").select("id, categorie, libelle").order("categorie"),
     db.from("niveaux_competence").select("niveau, libelle, description").order("niveau"),
   ]);
 
-  for (const r of [emploisRes, competencesRes, ecRes, autresRes, niveauxRes]) {
+  for (const r of [competencesRes, autresRes, niveauxRes]) {
     if (r.error) throw r.error;
   }
 
-  state.emplois = emploisRes.data;
   state.competences = competencesRes.data;
-  state.competencesById = new Map(competencesRes.data.map(c => [c.id, c]));
-
-  state.emploiCompetenceMap = new Map();
-  for (const row of ecRes.data) {
-    if (!state.emploiCompetenceMap.has(row.emploi_type_id)) {
-      state.emploiCompetenceMap.set(row.emploi_type_id, new Map());
-    }
-    state.emploiCompetenceMap.get(row.emploi_type_id).set(row.competence_id, row.origine);
+  state.competencesByDomaine = new Map();
+  for (const c of competencesRes.data) {
+    if (!state.competencesByDomaine.has(c.domaine)) state.competencesByDomaine.set(c.domaine, []);
+    state.competencesByDomaine.get(c.domaine).push(c);
   }
 
   state.autres = autresRes.data;
@@ -87,36 +75,9 @@ function updateProgress() {
     return;
   }
   progressEl.hidden = false;
-  const pct = (idx / (STEPS.length - 2)) * 100; // exclude intro & done from denominator
+  const pct = (idx / (STEPS.length - 2)) * 100;
   progressFill.style.width = `${Math.min(pct, 100)}%`;
   progressLabel.textContent = STEP_LABELS[state.step] || "";
-}
-
-function getMetierCompetenceIds(origine) {
-  const ids = new Set();
-  for (const emploiId of state.selectedEmplois) {
-    const map = state.emploiCompetenceMap.get(emploiId);
-    if (map) for (const [id, o] of map.entries()) {
-      if (!origine || o === origine) ids.add(id);
-    }
-  }
-  return ids;
-}
-
-function getAllShownCompetenceIds() {
-  const ids = new Set();
-  for (const id of getMetierCompetenceIds()) ids.add(id);
-  return ids;
-}
-
-function groupByDomaine(competences) {
-  const groups = new Map();
-  for (const c of competences) {
-    const key = c.domaine || "Autres compétences";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(c);
-  }
-  return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], "fr"));
 }
 
 function levelSelectorHtml(name, currentValue) {
@@ -153,11 +114,9 @@ function render() {
   switch (state.step) {
     case "intro": return renderIntro();
     case "identite": return renderIdentite();
-    case "emplois": return renderEmplois();
     case "competences": return renderCompetences();
     case "supplementaires": return renderSupplementaires();
-    case "horsmetier": return renderHorsMetier();
-    case "autres": return renderAutres();
+    case "texte_libre": return renderTexteLibre();
     case "recap": return renderRecap();
     case "done": return renderDone();
   }
@@ -168,16 +127,17 @@ function renderIntro() {
     <div class="step">
       <h1>Cartographie des compétences de la DDDT</h1>
       <p class="lead">
-        Ce court questionnaire recense les compétences de chaque agent de la direction — celles liées à votre métier,
-        mais aussi toute expertise que vous possédez au-delà (langues, permis, savoir-faire pratiques…).
-        Vos réponses sont associées à votre nom, afin de pouvoir identifier qui détient quelle compétence
-        en cas de besoin ponctuel.
+        Ce questionnaire recense les compétences de chaque agent de la direction, par grande thématique
+        (informatique, réglementation, sciences naturelles, agronomie...). Vous notez uniquement ce qui vous
+        concerne — pas besoin de tout remplir. Vos réponses sont associées à votre nom, afin de pouvoir
+        identifier qui détient quelle compétence en cas de besoin ponctuel.
       </p>
       <div class="card">
         <strong>Comment ça se passe</strong>
         <p style="color:var(--muted); margin: 8px 0 0;">
-          Vous indiquez votre identité et votre métier, vous notez les compétences qui y sont liées, puis vous pouvez
-          ajouter librement toute autre compétence que vous possédez. Comptez 5 à 10 minutes.
+          Vous indiquez votre identité, puis vous dépliez les thématiques qui vous concernent pour noter vos
+          compétences. Vous pouvez aussi cocher des compétences complémentaires (permis, langues...) et ajouter
+          un mot libre en fin de parcours. Comptez 5 à 10 minutes.
         </p>
       </div>
       <div class="nav-row" style="justify-content:flex-start;">
@@ -227,276 +187,87 @@ function renderIdentite() {
   prenomInput.addEventListener("input", () => { state.prenom = prenomInput.value; syncBtn(); });
 
   document.getElementById("back-btn").addEventListener("click", () => setStep("intro"));
-  nextBtn.addEventListener("click", async () => {
-    if (!state._suggestionDone) {
-      nextBtn.disabled = true;
-      nextBtn.textContent = "Un instant…";
-      try {
-        const { data, error } = await db.rpc("suggest_emplois", { p_nom: state.nom.trim(), p_prenom: state.prenom.trim() });
-        if (!error && data && data.length && state.selectedEmplois.size === 0) {
-          data.forEach(row => state.selectedEmplois.add(row.emploi_type_id));
-          state._suggested = true;
-        }
-      } catch (e) {
-        console.error(e);
-      }
-      state._suggestionDone = true;
-      nextBtn.disabled = false;
-      nextBtn.textContent = "Continuer";
-    }
-    setStep("emplois");
-  });
-}
-
-function renderEmplois() {
-  const search = state._emploiSearch || "";
-  const filtered = state.emplois.filter(e =>
-    e.libelle.toLowerCase().includes(search.toLowerCase())
-  );
-
-  appEl.innerHTML = `
-    <div class="step">
-      <h1>Quel est votre métier ?</h1>
-      <p class="lead">Sélectionnez le ou les emplois-types qui correspondent à votre poste. La plupart des agents n'en ont qu'un.</p>
-      ${state._suggested ? `<div class="card" style="margin-bottom:16px;"><strong>Pré-rempli automatiquement</strong><p style="color:var(--muted); margin:8px 0 0;">D'après votre nom, voici le métier que nous pensons être le vôtre. Corrigez si besoin.</p></div>` : ""}
-      <input type="text" class="search-box" id="emploi-search" placeholder="Rechercher un métier…" value="${escapeHtml(search)}">
-      <div class="option-list" id="emploi-list">
-        ${filtered.map(e => `
-          <div class="option-row" data-id="${e.id}">
-            <input type="checkbox" ${state.selectedEmplois.has(e.id) ? "checked" : ""}>
-            <div>
-              <div class="option-main">${escapeHtml(e.libelle)}</div>
-            </div>
-          </div>
-        `).join("") || `<div class="option-row"><span class="option-sub">Aucun résultat</span></div>`}
-      </div>
-      <div class="selected-tags" id="selected-tags">
-        ${[...state.selectedEmplois].map(id => {
-          const e = state.emplois.find(x => x.id === id);
-          return `<span class="tag">${escapeHtml(e ? e.libelle : "")}<button data-remove="${id}">&times;</button></span>`;
-        }).join("")}
-      </div>
-      <div class="nav-row">
-        <button class="btn btn-secondary" id="back-btn">Retour</button>
-        <button class="btn btn-primary" id="next-btn" ${state.selectedEmplois.size === 0 ? "disabled" : ""}>Continuer</button>
-      </div>
-    </div>`;
-
-  document.getElementById("emploi-search").addEventListener("input", (e) => {
-    state._emploiSearch = e.target.value;
-    render();
-    document.getElementById("emploi-search").focus();
-    document.getElementById("emploi-search").selectionStart = document.getElementById("emploi-search").value.length;
-  });
-
-  document.querySelectorAll("#emploi-list .option-row[data-id]").forEach(row => {
-    row.addEventListener("click", (e) => {
-      if (e.target.tagName === "INPUT") return;
-      toggleEmploi(parseInt(row.dataset.id));
-    });
-    row.querySelector("input").addEventListener("change", () => toggleEmploi(parseInt(row.dataset.id)));
-  });
-
-  document.querySelectorAll("#selected-tags button[data-remove]").forEach(btn => {
-    btn.addEventListener("click", () => toggleEmploi(parseInt(btn.dataset.remove)));
-  });
-
-  document.getElementById("back-btn").addEventListener("click", () => setStep("identite"));
-  document.getElementById("next-btn").addEventListener("click", () => setStep("competences"));
-}
-
-function toggleEmploi(id) {
-  if (state.selectedEmplois.has(id)) state.selectedEmplois.delete(id);
-  else state.selectedEmplois.add(id);
-  render();
+  nextBtn.addEventListener("click", () => setStep("competences"));
 }
 
 function renderCompetences() {
-  const ids = getMetierCompetenceIds("EAE confirmée");
-  const competences = [...ids].map(id => state.competencesById.get(id)).filter(Boolean);
-  const groups = groupByDomaine(competences);
+  const domaines = [...state.competencesByDomaine.keys()].sort((a, b) => a.localeCompare(b, "fr"));
 
   appEl.innerHTML = `
     <div class="step">
-      <h1>Vos compétences métier</h1>
+      <h1>Vos compétences</h1>
       <p class="lead">
-        Pour chaque compétence, indiquez votre niveau. Vous pouvez laisser "Sans avis" si elle ne vous concerne pas
-        ou si vous préférez ne pas répondre.
+        Dépliez les thématiques qui vous concernent et notez votre niveau sur les compétences précises.
+        Inutile d'ouvrir les thématiques qui ne vous concernent pas.
       </p>
-      ${groups.map(([domaine, comps]) => `
-        <div class="domain-group">
-          <div class="domain-title">${escapeHtml(domaine)}</div>
-          ${comps.map(c => `
-            <div class="comp-row">
-              <div class="comp-label">${escapeHtml(c.libelle)}</div>
-              ${levelSelectorHtml(`comp-${c.id}`, state.ratings.get(c.id))}
-            </div>
-          `).join("")}
-        </div>
-      `).join("") || `<p class="lead">Aucune compétence rattachée à ce métier pour le moment.</p>`}
+      <div id="accordion"></div>
       <div class="nav-row">
         <button class="btn btn-secondary" id="back-btn">Retour</button>
         <button class="btn btn-primary" id="next-btn">Continuer</button>
       </div>
     </div>`;
 
-  competences.forEach(c => {
-    document.getElementsByName(`comp-${c.id}`).forEach(input => {
-      input.addEventListener("change", (e) => {
-        if (e.target.value === "") state.ratings.delete(c.id);
-        else state.ratings.set(c.id, parseInt(e.target.value));
+  const acc = document.getElementById("accordion");
+
+  function renderAccordion() {
+    acc.innerHTML = domaines.map(dom => {
+      const comps = state.competencesByDomaine.get(dom).slice().sort((a, b) => a.libelle.localeCompare(b.libelle, "fr"));
+      const isOpen = state.openDomaines.has(dom);
+      const nbRated = comps.filter(c => state.ratings.has(c.id)).length;
+      return `
+        <div class="acc-item">
+          <button class="acc-header" data-dom="${escapeHtml(dom)}" type="button">
+            <span>${escapeHtml(dom)}</span>
+            <span class="acc-meta">${nbRated > 0 ? `${nbRated} notée${nbRated>1?"s":""} · ` : ""}${comps.length} compétence${comps.length>1?"s":""} ${isOpen ? "▲" : "▼"}</span>
+          </button>
+          <div class="acc-body" ${isOpen ? "" : "hidden"}>
+            ${comps.map(c => `
+              <div class="comp-row">
+                <div class="comp-label">${escapeHtml(c.libelle)}</div>
+                ${levelSelectorHtml(`comp-${c.id}`, state.ratings.get(c.id))}
+              </div>
+            `).join("")}
+          </div>
+        </div>`;
+    }).join("");
+
+    acc.querySelectorAll(".acc-header").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const dom = btn.dataset.dom;
+        if (state.openDomaines.has(dom)) state.openDomaines.delete(dom);
+        else state.openDomaines.add(dom);
+        renderAccordion();
       });
     });
-  });
 
-  document.getElementById("back-btn").addEventListener("click", () => setStep("emplois"));
+    domaines.forEach(dom => {
+      const comps = state.competencesByDomaine.get(dom);
+      comps.forEach(c => {
+        document.getElementsByName(`comp-${c.id}`).forEach(input => {
+          input.addEventListener("change", (e) => {
+            if (e.target.value === "") state.ratings.delete(c.id);
+            else state.ratings.set(c.id, parseInt(e.target.value));
+            renderAccordion();
+          });
+        });
+      });
+    });
+  }
+  renderAccordion();
+
+  document.getElementById("back-btn").addEventListener("click", () => setStep("identite"));
   document.getElementById("next-btn").addEventListener("click", () => setStep("supplementaires"));
 }
 
 function renderSupplementaires() {
-  const ids = getMetierCompetenceIds("Proposée");
-  const competences = [...ids].map(id => state.competencesById.get(id)).filter(Boolean);
-  const groups = groupByDomaine(competences);
-
-  appEl.innerHTML = `
-    <div class="step">
-      <h1>Autres compétences de votre bureau</h1>
-      <p class="lead">
-        Ces compétences concernent votre bureau ou votre service mais ne font pas partie de votre poste au
-        quotidien. Indiquez votre niveau si vous les maîtrisez tout de même, ou laissez "Sans avis" sinon.
-      </p>
-      ${groups.map(([domaine, comps]) => `
-        <div class="domain-group">
-          <div class="domain-title">${escapeHtml(domaine)}</div>
-          ${comps.map(c => `
-            <div class="comp-row">
-              <div class="comp-label">${escapeHtml(c.libelle)}</div>
-              ${levelSelectorHtml(`supp-${c.id}`, state.ratingsSupp.get(c.id))}
-            </div>
-          `).join("")}
-        </div>
-      `).join("") || `<p class="lead">Aucune compétence complémentaire identifiée pour ce métier.</p>`}
-      <div class="nav-row">
-        <button class="btn btn-secondary" id="back-btn">Retour</button>
-        <button class="btn btn-primary" id="next-btn">Continuer</button>
-      </div>
-    </div>`;
-
-  competences.forEach(c => {
-    document.getElementsByName(`supp-${c.id}`).forEach(input => {
-      input.addEventListener("change", (e) => {
-        if (e.target.value === "") state.ratingsSupp.delete(c.id);
-        else state.ratingsSupp.set(c.id, parseInt(e.target.value));
-      });
-    });
-  });
-
-  document.getElementById("back-btn").addEventListener("click", () => setStep("competences"));
-  document.getElementById("next-btn").addEventListener("click", () => setStep("autres"));
-}
-
-function renderHorsMetier() {
-  const metierIds = getAllShownCompetenceIds();
-
-  appEl.innerHTML = `
-    <div class="step">
-      <h1>Une autre expertise ?</h1>
-      <p class="lead">
-        Vous avez peut-être une compétence utile qui ne fait pas partie de votre métier habituel
-        (ex. un agent technique qui maîtrise aussi la comptabilité, une expertise scientifique acquise ailleurs…).
-        Cherchez-la et ajoutez-la ici. Cette étape est facultative.
-      </p>
-      <div class="autocomplete-wrap">
-        <input type="text" class="search-box" id="hm-search" placeholder="Rechercher une compétence…" autocomplete="off">
-        <div id="hm-results" class="autocomplete-results" hidden></div>
-      </div>
-      <div id="hm-added"></div>
-      <div class="nav-row">
-        <button class="btn btn-secondary" id="back-btn">Retour</button>
-        <button class="btn btn-primary" id="next-btn">Continuer</button>
-      </div>
-    </div>`;
-
-  const searchInput = document.getElementById("hm-search");
-  const resultsEl = document.getElementById("hm-results");
-
-  function renderAdded() {
-    const addedEl = document.getElementById("hm-added");
-    const entries = [...state.horsMetier.entries()];
-    addedEl.innerHTML = entries.map(([compId, niveau]) => {
-      const c = state.competencesById.get(compId);
-      return `
-        <div class="added-comp">
-          <div style="flex:1">
-            <div class="comp-label">${escapeHtml(c.libelle)}</div>
-            ${levelSelectorHtml(`hm-${compId}`, niveau)}
-          </div>
-          <button class="remove-btn" data-remove="${compId}" title="Retirer">&times;</button>
-        </div>`;
-    }).join("");
-
-    entries.forEach(([compId]) => {
-      document.getElementsByName(`hm-${compId}`).forEach(input => {
-        input.addEventListener("change", (e) => {
-          if (e.target.value === "") state.horsMetier.set(compId, null);
-          else state.horsMetier.set(compId, parseInt(e.target.value));
-        });
-      });
-    });
-    addedEl.querySelectorAll("button[data-remove]").forEach(btn => {
-      btn.addEventListener("click", () => {
-        state.horsMetier.delete(parseInt(btn.dataset.remove));
-        renderAdded();
-      });
-    });
-  }
-  renderAdded();
-
-  searchInput.addEventListener("input", () => {
-    const q = searchInput.value.trim().toLowerCase();
-    if (q.length < 2) { resultsEl.hidden = true; return; }
-    const matches = state.competences
-      .filter(c => !metierIds.has(c.id) && !state.horsMetier.has(c.id))
-      .filter(c => c.libelle.toLowerCase().includes(q))
-      .slice(0, 25);
-    if (matches.length === 0) {
-      resultsEl.innerHTML = `<div class="autocomplete-item"><span class="meta">Aucun résultat</span></div>`;
-      resultsEl.hidden = false;
-      return;
-    }
-    resultsEl.innerHTML = matches.map(c => `
-      <div class="autocomplete-item" data-id="${c.id}">
-        ${escapeHtml(c.libelle)}
-        <div class="meta">${escapeHtml(c.domaine || c.famille)}</div>
-      </div>`).join("");
-    resultsEl.hidden = false;
-    resultsEl.querySelectorAll(".autocomplete-item[data-id]").forEach(item => {
-      item.addEventListener("click", () => {
-        state.horsMetier.set(parseInt(item.dataset.id), null);
-        searchInput.value = "";
-        resultsEl.hidden = true;
-        renderAdded();
-      });
-    });
-  });
-
-  document.addEventListener("click", (e) => {
-    if (!e.target.closest(".autocomplete-wrap")) resultsEl.hidden = true;
-  });
-
-  document.getElementById("back-btn").addEventListener("click", () => setStep("autres"));
-  document.getElementById("next-btn").addEventListener("click", () => setStep("recap"));
-}
-
-function renderAutres() {
-  const categories = [...state.autresByCategorie.entries()].sort((a,b) => a[0].localeCompare(b[0], "fr"));
+  const categories = [...state.autresByCategorie.entries()].sort((a, b) => a[0].localeCompare(b[0], "fr"));
 
   appEl.innerHTML = `
     <div class="step">
       <h1>Compétences complémentaires</h1>
       <p class="lead">
         Permis, langues, habilitations, savoir-faire pratiques… Cochez tout ce qui vous concerne,
-        même si ça ne fait pas partie de votre fiche de poste.
+        même si ça ne fait pas partie de votre poste habituel.
       </p>
       ${categories.map(([cat, items]) => `
         <div class="domain-group">
@@ -540,8 +311,32 @@ function renderAutres() {
     });
   });
 
+  document.getElementById("back-btn").addEventListener("click", () => setStep("competences"));
+  document.getElementById("next-btn").addEventListener("click", () => setStep("texte_libre"));
+}
+
+function renderTexteLibre() {
+  appEl.innerHTML = `
+    <div class="step">
+      <h1>Autre chose à ajouter ?</h1>
+      <p class="lead">
+        Une compétence, une expérience ou un savoir-faire qui ne figure nulle part ailleurs dans ce
+        questionnaire ? Décrivez-le librement ici. Cette étape est facultative.
+      </p>
+      <textarea id="texte-libre-input" class="search-box" rows="6" style="resize:vertical; font-family:inherit;"
+        placeholder="Écrivez ici tout ce que vous voulez ajouter…">${escapeHtml(state.texteLibre)}</textarea>
+      <div class="nav-row">
+        <button class="btn btn-secondary" id="back-btn">Retour</button>
+        <button class="btn btn-primary" id="next-btn">Continuer</button>
+      </div>
+    </div>`;
+
+  document.getElementById("texte-libre-input").addEventListener("input", (e) => {
+    state.texteLibre = e.target.value;
+  });
+
   document.getElementById("back-btn").addEventListener("click", () => setStep("supplementaires"));
-  document.getElementById("next-btn").addEventListener("click", () => setStep("horsmetier"));
+  document.getElementById("next-btn").addEventListener("click", () => setStep("recap"));
 }
 
 function niveauLibelle(n) {
@@ -550,10 +345,8 @@ function niveauLibelle(n) {
 }
 
 function renderRecap() {
-  const emploisList = [...state.selectedEmplois].map(id => state.emplois.find(e => e.id === id)?.libelle).filter(Boolean);
-  const ratedMetier = [...state.ratings.entries()];
-  const ratedSupp = [...state.ratingsSupp.entries()];
-  const ratedHorsMetier = [...state.horsMetier.entries()].filter(([, n]) => n !== null && n !== undefined);
+  const competencesById = new Map(state.competences.map(c => [c.id, c]));
+  const rated = [...state.ratings.entries()];
   const checkedAutres = [...state.autresChecked.entries()];
 
   appEl.innerHTML = `
@@ -569,34 +362,11 @@ function renderRecap() {
       </div>
 
       <div class="recap-section">
-        <h3>Métier(s)</h3>
-        <div class="card">${emploisList.map(escapeHtml).join(", ") || "—"}</div>
-      </div>
-
-      <div class="recap-section">
-        <h3>Compétences métier notées (${ratedMetier.length})</h3>
+        <h3>Compétences notées (${rated.length})</h3>
         <div class="card">
-          ${ratedMetier.length ? ratedMetier.map(([id, n]) => `
-            <div class="recap-item"><span>${escapeHtml(state.competencesById.get(id).libelle)}</span><span class="lvl">${escapeHtml(niveauLibelle(n))}</span></div>
+          ${rated.length ? rated.map(([id, n]) => `
+            <div class="recap-item"><span>${escapeHtml(competencesById.get(id).libelle)}</span><span class="lvl">${escapeHtml(niveauLibelle(n))}</span></div>
           `).join("") : `<span style="color:var(--muted)">Aucune compétence notée</span>`}
-        </div>
-      </div>
-
-      <div class="recap-section">
-        <h3>Autres compétences de votre bureau (${ratedSupp.length})</h3>
-        <div class="card">
-          ${ratedSupp.length ? ratedSupp.map(([id, n]) => `
-            <div class="recap-item"><span>${escapeHtml(state.competencesById.get(id).libelle)}</span><span class="lvl">${escapeHtml(niveauLibelle(n))}</span></div>
-          `).join("") : `<span style="color:var(--muted)">Aucune</span>`}
-        </div>
-      </div>
-
-      <div class="recap-section">
-        <h3>Autre expertise (${ratedHorsMetier.length})</h3>
-        <div class="card">
-          ${ratedHorsMetier.length ? ratedHorsMetier.map(([id, n]) => `
-            <div class="recap-item"><span>${escapeHtml(state.competencesById.get(id).libelle)}</span><span class="lvl">${escapeHtml(niveauLibelle(n))}</span></div>
-          `).join("") : `<span style="color:var(--muted)">Aucune</span>`}
         </div>
       </div>
 
@@ -609,6 +379,11 @@ function renderRecap() {
         </div>
       </div>
 
+      <div class="recap-section">
+        <h3>Texte libre</h3>
+        <div class="card">${state.texteLibre.trim() ? escapeHtml(state.texteLibre) : `<span style="color:var(--muted)">Rien d'ajouté</span>`}</div>
+      </div>
+
       <div class="nav-row">
         <button class="btn btn-secondary" id="back-btn" ${state.submitting ? "disabled" : ""}>Retour</button>
         <button class="btn btn-primary" id="submit-btn" ${state.submitting ? "disabled" : ""}>
@@ -617,7 +392,7 @@ function renderRecap() {
       </div>
     </div>`;
 
-  document.getElementById("back-btn").addEventListener("click", () => setStep("horsmetier"));
+  document.getElementById("back-btn").addEventListener("click", () => setStep("texte_libre"));
   document.getElementById("submit-btn").addEventListener("click", submitReponse);
 }
 
@@ -629,7 +404,7 @@ async function submitReponse() {
   try {
     const { data: reponse, error: repError } = await db
       .from("reponses")
-      .insert({ nom: state.nom.trim(), prenom: state.prenom.trim() })
+      .insert({ nom: state.nom.trim(), prenom: state.prenom.trim(), texte_libre: state.texteLibre.trim() || null })
       .select()
       .single();
     if (repError) {
@@ -640,23 +415,9 @@ async function submitReponse() {
     }
     const reponseId = reponse.id;
 
-    const emploisRows = [...state.selectedEmplois].map(emploi_type_id => ({ reponse_id: reponseId, emploi_type_id }));
-    if (emploisRows.length) {
-      const { error } = await db.from("reponses_emplois").insert(emploisRows);
-      if (error) throw error;
-    }
-
-    const compRows = [];
-    for (const [competence_id, niveau] of state.ratings.entries()) {
-      compRows.push({ reponse_id: reponseId, competence_id, niveau, hors_metier: false });
-    }
-    for (const [competence_id, niveau] of state.ratingsSupp.entries()) {
-      compRows.push({ reponse_id: reponseId, competence_id, niveau, hors_metier: false });
-    }
-    for (const [competence_id, niveau] of state.horsMetier.entries()) {
-      if (niveau === null || niveau === undefined) continue;
-      compRows.push({ reponse_id: reponseId, competence_id, niveau, hors_metier: true });
-    }
+    const compRows = [...state.ratings.entries()].map(([competence_id, niveau]) => ({
+      reponse_id: reponseId, competence_id, niveau,
+    }));
     if (compRows.length) {
       const { error } = await db.from("reponses_competences").insert(compRows);
       if (error) throw error;
